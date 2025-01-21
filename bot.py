@@ -1,8 +1,16 @@
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Your bot's token from BotFather
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if BOT_TOKEN is None:
+    raise ValueError("BOT_TOKEN environment variable is not set.")
+
 
 # Define the command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
