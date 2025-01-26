@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
-import os, random, json, sqlite3
+import os, random, json, sqlite3, time, schedule, threading
 
 load_dotenv()
 ADMIN_ID = os.getenv("ADMIN_ID")
@@ -108,6 +108,34 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text("Message sent to all subscribers.")
 
+# daily quote to subscribed users
+
+async def daily_quote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    with open("quotes.json", "r") as file:
+        quotes = json.load(file)
+        quote = random.choice(quotes)
+
+    with sqlite3.connect('./db/users.db') as conn:
+        c = conn.cursor()
+        c.execute('''
+            SELECT user_id
+            FROM users
+            WHERE subscribed = 1
+        ''')
+        user_ids = c.fetchall()
+
+    for user_id in user_ids:
+        try:
+            context.bot.send_message(chat_id=user_id[0], text=f"{quote['quote']}\n\n_{quote['name']}_", parse_mode="Markdown")
+        except Exception as e:
+            print(f"Failed to send message to {user_id[0]}: {e}")
+
+def schedule_daily_quote():
+    schedule.every().day.at("09:00").do(daily_quote)
+    print(f"Scheduled daily quote task. time now is {time.strftime('%H:%M:%S')}")
+    while True:
+        schedule.run_pending()  # Check for pending tasks and run them
+        time.sleep(60)  # Wait 1 minute between checks
 
 # Main function to set up the bot
 def main():
@@ -126,8 +154,8 @@ def main():
     application.add_handler(CommandHandler("broadcast", broadcast))
 
     # Start polling for updates
-    application.run_polling()
-
+    threading.Thread(target=schedule_daily_quote).start()
+    threading.Thread(target=application.run_polling).start()
     
 if __name__ == "__main__":
     main()
