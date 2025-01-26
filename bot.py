@@ -114,11 +114,13 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # daily quote to subscribed users
 
-async def daily_quote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def daily_quote() -> None:
+    """Send a daily quote to all subscribed users."""
     with open("quotes.json", "r") as file:
         quotes = json.load(file)
         quote = random.choice(quotes)
 
+    # Send daily quote to all subscribed users
     with sqlite3.connect('./db/users.db') as conn:
         c = conn.cursor()
         c.execute('''
@@ -130,16 +132,22 @@ async def daily_quote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     for user_id in user_ids:
         try:
-            context.bot.send_message(chat_id=user_id[0], text=f"{quote['quote']}\n\n_{quote['name']}_", parse_mode="Markdown")
+            # Assuming context is available in this scope
+            await bot.send_message(chat_id=user_id[0], text=f"{quote['quote']}\n\n_{quote['name']}_", parse_mode="Markdown")
         except Exception as e:
             print(f"Failed to send message to {user_id[0]}: {e}")
 
+# Function to schedule daily quotes
 def schedule_daily_quote():
-    schedule.every().day.at("09:00").do(daily_quote)
-    print(f"Scheduled daily quote task. time now is {time.strftime('%H:%M:%S')}")
+    schedule.every().day.at("09:00").do(run_daily_quote)
+    print(f"Scheduled daily quote task. Time now is {time.strftime('%H:%M:%S')}")
     while True:
         schedule.run_pending()  # Check for pending tasks and run them
         time.sleep(60)  # Wait 1 minute between checks
+
+# Wrapper function to trigger daily quote
+def run_daily_quote():
+    asyncio.run(daily_quote())
 
 # Main function to set up the bot
 def main():
