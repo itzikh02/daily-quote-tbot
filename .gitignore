@@ -170,5 +170,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# content of the db directory
-db/*
+# content of the db directory, but save the directory itself
+!db/
