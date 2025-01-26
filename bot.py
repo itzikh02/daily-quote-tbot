@@ -23,7 +23,6 @@ def connect_db():
         last_name TEXT,
         subscribed INTEGER DEFAULT 0)
     ''')
-        conn.commit()
 
 # Define the command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
