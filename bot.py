@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
-import os, random, json, sqlite3, time, schedule, threading
+import os, random, json, sqlite3, time, schedule, threading, asyncio
 
 load_dotenv()
 ADMIN_ID = os.getenv("ADMIN_ID")
@@ -9,6 +9,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 
 # source .venv/bin/activate - to activate the virtual environment
+
+def run_polling(application):
+    """Run the Telegram bot polling inside an event loop."""
+    asyncio.run(application.run_polling())
 
 # connect or create the database
 def connect_db():
@@ -154,8 +158,12 @@ def main():
     application.add_handler(CommandHandler("broadcast", broadcast))
 
     # Start polling for updates
+    
+    # Start the daily quote scheduler in a separate thread
     threading.Thread(target=schedule_daily_quote).start()
-    threading.Thread(target=application.run_polling).start()
+
+    # Run the Telegram bot polling in the main thread
+    run_polling(application)
     
 if __name__ == "__main__":
     main()
