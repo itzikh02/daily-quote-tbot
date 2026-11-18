@@ -1,177 +1,196 @@
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+import json
+import logging
+import os
+import random
+import sqlite3
+from datetime import time
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
 from dotenv import load_dotenv
-import os, random, json, sqlite3, time, schedule, threading, asyncio
+from telegram import Update
+from telegram.error import TelegramError
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 load_dotenv()
-ADMIN_ID = os.getenv("ADMIN_ID")
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID")
+DB_PATH = Path("db/users.db")
+QUOTES_PATH = Path("quotes.json")
+TIMEZONE = ZoneInfo("Asia/Jerusalem")
+DAILY_QUOTE_TIME = time(hour=9, minute=0, tzinfo=TIMEZONE)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
 
 
-# source .venv/bin/activate - to activate the virtual environment
+def connect_db() -> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER UNIQUE NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                subscribed INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
 
-def run_polling(application):
-    """Run the Telegram bot polling inside an event loop."""
-    asyncio.run(application.run_polling())
 
-# connect or create the database
-def connect_db():
-    with sqlite3.connect('./db/users.db') as conn:
-        c = conn.cursor()
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER UNIQUE,
-        username TEXT,
-        first_name TEXT,
-        last_name TEXT,
-        subscribed INTEGER DEFAULT 0)
-    ''')
+def save_user(update: Update) -> None:
+    user = update.effective_user
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO users (user_id, username, first_name, last_name)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                last_name = excluded.last_name
+            """,
+            (user.id, user.username, user.first_name, user.last_name),
+        )
 
-# Define the command handler
+
+def get_random_quote() -> dict:
+    with QUOTES_PATH.open("r", encoding="utf-8") as file:
+        quotes = json.load(file)
+    if not quotes:
+        raise ValueError("quotes.json does not contain any quotes.")
+    return random.choice(quotes)
+
+
+def get_subscriber_ids() -> list[int]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT user_id FROM users WHERE subscribed = 1"
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def format_quote(quote: dict) -> str:
+    return f"{quote['quote']}\n\n- {quote['name']}"
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    user_name = update.effective_user.username
-    first_name = update.effective_user.first_name
-    last_name = update.effective_user.last_name
+    save_user(update)
+    name = update.effective_user.first_name or "there"
+    await update.message.reply_text(
+        f"Hello, {name}! Use /quote for a random quote or /subscribe to receive a daily quote."
+    )
 
-    with sqlite3.connect('./db/users.db') as conn:
-        c = conn.cursor()
-        c.execute('''
-        INSERT OR IGNORE INTO users (user_id, username, first_name, last_name)
-        VALUES (?, ?, ?, ?)
-        ''', (user_id, user_name, first_name, last_name))
 
-    await update.message.reply_text(f"Hello, {user_name}! How can I help you?")
-
-# allow the user to subcribe to the bot
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    user_name = update.effective_user.username
+    save_user(update)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE users SET subscribed = 1 WHERE user_id = ?",
+            (update.effective_user.id,),
+        )
+    await update.message.reply_text("You are now subscribed to the daily quote.")
 
-    with sqlite3.connect('./db/users.db') as conn:
-        c = conn.cursor()
-        c.execute('''
-        UPDATE users
-        SET subscribed = 1
-        WHERE user_id = ?
-        ''', (user_id,))
 
-    await update.message.reply_text(f"Thanks, {user_name}! You have been subscribed to the bot.")
-
-# allow the user to unsubscribe from the bot
 async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    user_name = update.effective_user.username
+    save_user(update)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE users SET subscribed = 0 WHERE user_id = ?",
+            (update.effective_user.id,),
+        )
+    await update.message.reply_text("You have been unsubscribed from the daily quote.")
 
-    with sqlite3.connect('./db/users.db') as conn:
-        c = conn.cursor()
-        c.execute('''
-        UPDATE users
-        SET subscribed = 0
-        WHERE user_id = ?
-        ''', (user_id,))
-
-    await update.message.reply_text(f"Thanks, {user_name}! You have been unsubscribed from the bot.")
 
 async def quote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Respond to the /quote command."""
-    with open("quotes.json", "r") as file:
-        quotes = json.load(file)
-        quote = random.choice(quotes) 
-    await update.message.reply_text(f"{quote['quote']}\n\n_{quote['name']}_", parse_mode="Markdown")
+    try:
+        selected_quote = get_random_quote()
+        await update.message.reply_text(format_quote(selected_quote))
+    except (OSError, json.JSONDecodeError, KeyError, ValueError):
+        logger.exception("Could not load a random quote.")
+        await update.message.reply_text("Sorry, a quote is unavailable right now.")
 
-# SEND MESSAGE TO ALL SUBSCRIBED USERS
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if str(update.effective_user.id) != str(ADMIN_ID):
-        # await update.message.reply_text("You are not authorized to use this command.")
-        print(f"Unauthorized access to broadcast command by user {update.effective_user.id}")
+    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID:
+        logger.warning(
+            "Unauthorized broadcast attempt by Telegram user %s",
+            update.effective_user.id,
+        )
         return
-
     if not context.args:
-        await update.message.reply_text("Please provide a message to broadcast.")
+        await update.message.reply_text("Usage: /broadcast Your message")
         return
 
-    text = " ".join(context.args)
-
-    with sqlite3.connect('./db/users.db') as conn:
-        c = conn.cursor()
-        c.execute('''
-            SELECT user_id
-            FROM users
-            WHERE subscribed = 1
-        ''')
-        user_ids = c.fetchall()
-
-    for user_id in user_ids:
+    message = " ".join(context.args)
+    sent = 0
+    failed = 0
+    for user_id in get_subscriber_ids():
         try:
-            await context.bot.send_message(chat_id=user_id[0], text=text)
-        except Exception as e:
-            print(f"Failed to send message to {user_id[0]}: {e}")
+            await context.bot.send_message(chat_id=user_id, text=message)
+            sent += 1
+        except TelegramError:
+            logger.exception("Broadcast failed for user %s", user_id)
+            failed += 1
 
-    await update.message.reply_text("Message sent to all subscribers.")
+    await update.message.reply_text(
+        f"Broadcast completed. Sent: {sent}. Failed: {failed}."
+    )
 
-# daily quote to subscribed users
 
-async def daily_quote() -> None:
-    """Send a daily quote to all subscribed users."""
-    with open("quotes.json", "r") as file:
-        quotes = json.load(file)
-        quote = random.choice(quotes)
+async def daily_quote(context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        message = format_quote(get_random_quote())
+    except (OSError, json.JSONDecodeError, KeyError, ValueError):
+        logger.exception("Could not prepare the daily quote.")
+        return
 
-    # Send daily quote to all subscribed users
-    with sqlite3.connect('./db/users.db') as conn:
-        c = conn.cursor()
-        c.execute('''
-            SELECT user_id
-            FROM users
-            WHERE subscribed = 1
-        ''')
-        user_ids = c.fetchall()
-
-    for user_id in user_ids:
+    for user_id in get_subscriber_ids():
         try:
-            # Assuming context is available in this scope
-            await bot.send_message(chat_id=user_id[0], text=f"{quote['quote']}\n\n_{quote['name']}_", parse_mode="Markdown")
-        except Exception as e:
-            print(f"Failed to send message to {user_id[0]}: {e}")
+            await context.bot.send_message(chat_id=user_id, text=message)
+        except TelegramError:
+            logger.exception("Daily quote delivery failed for user %s", user_id)
 
-# Function to schedule daily quotes
-def schedule_daily_quote():
-    schedule.every().day.at("09:00").do(run_daily_quote)
-    print(f"Scheduled daily quote task. Time now is {time.strftime('%H:%M:%S')}")
-    while True:
-        schedule.run_pending()  # Check for pending tasks and run them
-        time.sleep(60)  # Wait 1 minute between checks
 
-# Wrapper function to trigger daily quote
-def run_daily_quote():
-    asyncio.run(daily_quote())
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("An error occurred while handling an update.", exc_info=context.error)
 
-# Main function to set up the bot
-def main():
-    connect_db()
 
-    if BOT_TOKEN is None:
+def main() -> None:
+    if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable is not set.")
-    
-    application = Application.builder().token(BOT_TOKEN).build()
 
-    # Add command handlers
+    connect_db()
+    application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("quote", quote))
     application.add_handler(CommandHandler("subscribe", subscribe))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe))
     application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_error_handler(error_handler)
 
-    # Start polling for updates
-    
-    # Start the daily quote scheduler in a separate thread
-    threading.Thread(target=schedule_daily_quote).start()
+    if application.job_queue is None:
+        raise RuntimeError(
+            "JobQueue is unavailable. Install python-telegram-bot[job-queue]."
+        )
 
-    # Run the Telegram bot polling in the main thread
-    run_polling(application)
-    
+    application.job_queue.run_daily(
+        daily_quote,
+        time=DAILY_QUOTE_TIME,
+        name="daily_quote",
+    )
+    logger.info(
+        "Bot is starting. Daily quotes are scheduled for 09:00 Asia/Jerusalem."
+    )
+    application.run_polling()
+
+
 if __name__ == "__main__":
     main()
